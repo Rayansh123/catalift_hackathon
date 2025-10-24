@@ -43,7 +43,7 @@ CHROMA_PERSIST_DIR = "chroma_db_cv"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-LLM_MODEL_NAME = "llama3-70b-8192" # Or "mixtral-8x7b-32768"
+LLM_MODEL_NAME = "mixtral-8x7b-32768" # Or "mixtral-8x7b-32768"
 
 # --- RAG Helper Functions ---
 
