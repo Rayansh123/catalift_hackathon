@@ -1,0 +1,12 @@
+streamlit
+crewai==0.35.8
+langchain==0.2.1
+langchain-groq==0.1.5
+langchain-community==0.2.1
+chromadb==0.5.3
+pypdf==4.2.0
+python-dotenv==1.0.1
+duckduckgo-search==6.1.6
+langchain-text-splitters==0.2.1
+fastembed==0.3.0
+protobuf==4.25.3

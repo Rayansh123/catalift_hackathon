@@ -1,0 +1,31 @@
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# ChromaDB persistent storage
+chroma_db_cv/
+
+# Personal documents folder (if you don't want them public)
+# If you DO want the fallback docs public, remove the line below
+docs/
+
+# Python virtual environment
+venv/
+*.venv/
+env/
+.env
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE files (example for VSCode)
+.vscode/
+
+# OS generated files (example for macOS)
+.DS_Store
+
+# Temporary files created by setup_rag_from_uploaded_files
+# (Though they should be cleaned up, good to ignore just in case)
+*.tmp
