@@ -1,14 +1,18 @@
 streamlit
 crewai==0.35.8
-# Downgraded Langchain and related packages to be < 0.2.0
+# --- Langchain stack (already downgraded) ---
 langchain==0.1.20
-langchain-groq==0.1.5 # Keep this, should be compatible
-langchain-community==0.0.38 # Compatible with langchain 0.1.20
-langchain-text-splitters==0.0.2 # Compatible with langchain 0.1.20
-# --- Other packages remain the same ---
-chromadb==0.5.3
+langchain-groq==0.1.5
+langchain-community==0.0.38
+langchain-text-splitters==0.0.2
+# --- Downgraded ChromaDB for embedchain compatibility ---
+chromadb==0.4.24
+# --- Other packages ---
 pypdf==4.2.0
 python-dotenv==1.0.1
 duckduckgo-search==6.1.6
 fastembed==0.3.0
 protobuf==4.25.3
+# --- Add potential missing dependencies for chromadb 0.4.x ---
+onnxruntime # Often needed by older chromadb/sentence-transformers
+sentence-transformers # Often needed by older chromadb/fastembed
