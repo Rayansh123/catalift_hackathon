@@ -1,15 +1,17 @@
 # app.py
+# Final Version - Compatible with requirements.txt adjustments
+
 import streamlit as st
 import os
 import shutil
 import tempfile
 from dotenv import load_dotenv
 
-# Langchain Imports
+# Langchain Imports (verified for compatibility)
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredMarkdownLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import FastEmbeddings # Corrected import name
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings # Corrected import
 from langchain.tools.retriever import create_retriever_tool
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_groq import ChatGroq
@@ -117,8 +119,7 @@ def setup_rag_from_uploaded_files(uploaded_files):
             return None
 
         try:
-            # Use FastEmbeddings (assuming this class name based on requirements)
-            embedding_model = FastEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+            embedding_model = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL_NAME)
             _create_vector_store(loaded_docs, embedding_model)
             st.session_state['rag_ready'] = True
             return True # Indicate success
@@ -136,8 +137,7 @@ def initialize_rag_tool():
     2. If not found, tries to index files from fallback 'docs/' folder.
     Returns the RAG tool or None if setup fails.
     """
-    # Use FastEmbeddings
-    embedding_model = FastEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+    embedding_model = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     vector_store = None
     rag_tool = None
     rag_source = "None" # Track where the RAG data came from
@@ -163,7 +163,6 @@ def initialize_rag_tool():
         if os.path.exists(DOCS_DIR) and any(os.scandir(DOCS_DIR)): # Check if not empty
             try:
                 st.info(f"Existing Vector Store not found or invalid. Indexing fallback documents from '{DOCS_DIR}'...")
-                # Get list of files to process
                 fallback_files = [os.path.join(DOCS_DIR, f) for f in os.listdir(DOCS_DIR) if os.path.isfile(os.path.join(DOCS_DIR, f))]
                 if fallback_files:
                     docs = _load_documents_from_paths(fallback_files)
@@ -244,15 +243,15 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
         allow_delegation=False,
         verbose=True,
         max_iter=5, # Limit iterations
-        max_rpm=None # Remove RPM limit for smoother demo unless needed
+        max_rpm=None
     )
 
     # --- CORRECTED Task Description ---
     # Define the RAG instruction part separately
     rag_instruction = ""
     if _rag_tool:
-        # Note: No backslash needed before the single quote if using triple double quotes or if the outer quotes are different
-        rag_instruction = "Prioritize using the `personal_document_retriever` tool for questions specifically about Nikhil Rayaprolu's skills (AI, sales, community, B.Tech EEE), experiences (Fettle Health, Catalift, Aretiz, Deloitte, Brimx, MUTBI, Hult Prize, Student E-Cell, YoungSphere), projects, education (Manipal), achievements (NIDHI-EIR, jury panels), or opinions mentioned in his documents. "
+        # Using triple quotes to avoid issues with single quotes inside
+        rag_instruction = """Prioritize using the `personal_document_retriever` tool for questions specifically about Nikhil Rayaprolu's skills (AI, sales, community, B.Tech EEE), experiences (Fettle Health, Catalift, Aretiz, Deloitte, Brimx, MUTBI, Hult Prize, Student E-Cell, YoungSphere), projects, education (Manipal), achievements (NIDHI-EIR, jury panels), or opinions mentioned in his documents. """
     else:
         rag_instruction = "You cannot access personal documents. State this if asked about specifics not searchable online. "
 
@@ -285,8 +284,9 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
 st.set_page_config(page_title="Catalift AI Mentor", layout="wide")
 
 # --- Initialize RAG on first load/check ---
+# Uses cache_resource, so only runs once per session unless cleared
 if 'rag_initialized' not in st.session_state:
-    initialize_rag_tool() # This function sets st.session_state['rag_ready']
+    initialize_rag_tool()
     st.session_state['rag_initialized'] = True
 
 # --- Login Logic ---
@@ -299,7 +299,6 @@ if not st.session_state['logged_in']:
     st.write("Log in to access the AI Mentor platform.")
 
     with st.form("login_form"):
-        # Inputs not actually used for auth in prototype
         username = st.text_input("Username (any)")
         password = st.text_input("Password (any)", type="password")
         col1, col2 = st.columns(2)
@@ -326,7 +325,6 @@ elif st.session_state['role'] == 'mentor':
     with st.sidebar:
         st.text("👤 Nikhil Rayaprolu") # <-- UPDATED
         if st.button("Logout"):
-            # Clear relevant session state, keep RAG potentially
             st.session_state['logged_in'] = False
             st.session_state['role'] = None
             st.rerun()
@@ -359,11 +357,11 @@ elif st.session_state['role'] == 'mentor':
             with st.spinner("Processing and Indexing... Please wait."):
                 success = setup_rag_from_uploaded_files(uploaded_files)
                 if success:
-                    # Clear the cached CrewAI components to force reload with new data
+                    # Clear the cached CrewAI components and RAG tool
                     st.cache_resource.clear()
                     st.session_state['rag_initialized'] = False # Re-trigger initialization check
                     st.success("Documents processed! The AI knowledge base has been updated.")
-                    st.rerun() # Rerun to refresh status indicator and potentially clear cache resource usage
+                    st.rerun() # Refresh to show status and clear cache resource usage
                 else:
                     st.error("Document processing failed.")
         elif uploaded_files:
@@ -404,7 +402,6 @@ elif st.session_state['role'] == 'student':
     with st.sidebar:
         st.text("👤 Student Profile (Placeholder)")
         if st.button("Logout"):
-            # Clear relevant session state for student
             st.session_state['logged_in'] = False
             st.session_state['role'] = None
             st.session_state.pop('messages', None) # Clear chat history
@@ -414,11 +411,13 @@ elif st.session_state['role'] == 'student':
     rag_tool = initialize_rag_tool() # Cached function, handles fallback
 
     my_crew = None
+    # Setup CrewAI components only if RAG tool loaded or fallback succeeded at least once
+    # We rely on setup_crewai_components handling the None case for rag_tool
     try:
-        # Pass the potentially None rag_tool to the setup function
         my_crew = setup_crewai_components(rag_tool)
     except Exception as e:
         st.error(f"Failed to initialize AI Agent components: {e}")
+
 
     # --- Chat Interface ---
     if "messages" not in st.session_state:
@@ -442,10 +441,9 @@ elif st.session_state['role'] == 'student':
                 with st.spinner("🧠 Thinking..."):
                     try:
                         inputs = {"user_query": prompt}
-                        # Kickoff the crew task
                         result = my_crew.kickoff(inputs=inputs)
 
-                        # Basic cleanup (optional, adjust if needed)
+                        # Basic cleanup (optional)
                         cleaned_result = result.replace(" chaîne:", "").replace(" Chaîne:", "")
 
                         st.markdown(cleaned_result)
@@ -456,7 +454,7 @@ elif st.session_state['role'] == 'student':
                         st.markdown(error_message)
                         st.session_state.messages.append({"role": "assistant", "content": error_message})
         else:
-            st.error("AI Agent is not available. Please ensure the Mentor has set up the knowledge base.")
+            st.error("AI Agent is not available. Please ensure the Mentor has set up the knowledge base or check logs.")
             st.session_state.messages.append({"role": "assistant", "content": "Sorry, I am not available right now. Please check back later."})
 
 
