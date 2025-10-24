@@ -1,5 +1,5 @@
 # app.py
-# Final Version - Corrected FastEmbeddings Import Scope
+# Final Version - Reverting Chroma creation, fixing FastEmbeddings import definitively
 
 import streamlit as st
 import os
@@ -7,12 +7,24 @@ import shutil
 import tempfile
 from dotenv import load_dotenv
 
-# Langchain Imports (verified for compatibility)
+# Langchain Imports
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredMarkdownLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-# >>>>> REMOVE FastEmbeddings import from here <<<<<
-# from langchain_community.embeddings.fastembed import FastEmbedEmbeddings # REMOVE THIS LINE
+# >>>>> CORRECTED GLOBAL IMPORT for FastEmbeddings <<<<<
+# It seems FastEmbeddings might be directly under langchain_community.embeddings in some versions
+# Let's try the most specific path first, then broaden if needed.
+try:
+    # Try the specific path first
+    from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+except ImportError:
+    try:
+        # Fallback to the general path (less likely for 0.0.38 but worth trying)
+        from langchain_community.embeddings import FastEmbedEmbeddings
+    except ImportError:
+        st.error("Fatal Error: Could not import FastEmbedEmbeddings. Check library versions.")
+        st.stop() # Stop execution if import fails
+
 from langchain.tools.retriever import create_retriever_tool
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_groq import ChatGroq
@@ -49,51 +61,32 @@ LLM_MODEL_NAME = "llama-3.1-8b-instant" # Use currently supported model
 
 # --- RAG Helper Functions ---
 
-def _create_vector_store(docs, embedding_model_instance): # Pass instance now
-    """Creates a Chroma vector store from documents, overwriting if exists."""
+# --- REVERTED _create_vector_store to use Chroma.from_documents ---
+def _create_vector_store(docs, embedding_model_instance):
+    """Creates a Chroma vector store from documents using from_documents."""
     st.write("Splitting documents into chunks...")
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     splits = text_splitter.split_documents(docs)
     st.write(f"Created {len(splits)} text chunks.")
 
-    st.write("Setting up Vector DB...")
+    st.write("Creating embeddings and storing in Vector DB (this might take a moment)...")
+    # Clear existing DB before creating a new one
     if os.path.exists(CHROMA_PERSIST_DIR):
         st.write("Clearing existing knowledge base...")
         shutil.rmtree(CHROMA_PERSIST_DIR)
 
-    os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
-    st.write(f"Ensured directory exists: {CHROMA_PERSIST_DIR}")
-
+    # Use Chroma.from_documents which handles client/collection setup internally
     try:
-        client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
-        st.write("Initialized Persistent Client.")
-        collection_name = "mentor_docs_collection"
-        st.write(f"Getting or creating collection: {collection_name}...")
-        # Use Chroma's native SentenceTransformer function wrapper with the model name
-        collection = client.get_or_create_collection(
-            name=collection_name,
-            embedding_function=chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL_NAME)
-        )
-        st.write("Collection ready.")
-
-        st.write("Adding documents to collection...")
-        doc_texts = [doc.page_content for doc in splits]
-        doc_ids = [f"doc_{i}" for i in range(len(splits))]
-        collection.add(documents=doc_texts, ids=doc_ids)
-        st.success("✅ Knowledge Base Indexed Successfully!")
-
-        # Return the LangChain Chroma object
-        vector_store_lc = Chroma(
-            client=client,
-            collection_name=collection_name,
-            embedding_function=embedding_model_instance, # Use the passed Langchain instance
+        vector_store = Chroma.from_documents(
+            documents=splits,
+            embedding=embedding_model_instance, # Use the Langchain wrapper instance
             persist_directory=CHROMA_PERSIST_DIR
         )
-        return vector_store_lc
-
+        st.success("✅ Knowledge Base Indexed Successfully!")
+        return vector_store # Return the Langchain object
     except Exception as e:
-        st.error(f"Error during Vector Store creation/indexing: {e}")
-        raise
+         st.error(f"Error during Vector Store creation/indexing: {e}")
+         raise # Re-raise error
 
 def _load_documents_from_paths(file_paths):
     """Loads documents from a list of file paths."""
@@ -122,9 +115,6 @@ def _load_documents_from_paths(file_paths):
 # Function called by Mentor Upload
 def setup_rag_from_uploaded_files(uploaded_files):
     """Processes uploaded files and creates/overwrites the RAG retriever tool."""
-    # >>>>> IMPORT FastEmbeddings HERE <<<<<
-    from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
-
     if not uploaded_files:
         st.warning("No files uploaded.")
         st.session_state['rag_ready'] = False
@@ -163,71 +153,85 @@ def setup_rag_from_uploaded_files(uploaded_files):
             return None
 
 # Function called on App Start / Student Login (with caching)
+# --- MODIFIED initialize_rag_tool to use simpler Chroma loading ---
 @st.cache_resource(show_spinner="Initializing Knowledge Base...")
 def initialize_rag_tool():
     """
-    Initializes the RAG tool by loading the persisted ChromaDB collection.
+    Initializes the RAG tool.
+    1. Tries to load existing DB using Chroma directly.
+    2. If not found, tries to index files from fallback 'docs/' folder.
     Returns the RAG tool or None if setup fails.
     """
-    # >>>>> IMPORT FastEmbeddings HERE <<<<<
-    from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
-
-    # Initialize embedding model *inside* the cached function
+    # Initialize embedding model instance here
     embedding_model_instance = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+    vector_store = None
     rag_tool = None
     rag_source = "None"
-    collection_name = "mentor_docs_collection"
 
+    # 1. Try loading existing persisted DB using Chroma directly
     if os.path.exists(CHROMA_PERSIST_DIR):
         try:
             st.write("Loading existing Vector Store...")
-            client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
-            st.write("Initialized Persistent Client.")
-
-            # Check if collection exists
-            collections = client.list_collections()
-            collection_exists = any(col.name == collection_name for col in collections)
-
-            if collection_exists:
-                st.write(f"Found collection: {collection_name}")
-                # Create LangChain Chroma object using the instance
-                vector_store_lc = Chroma(
-                    client=client,
-                    collection_name=collection_name,
-                    embedding_function=embedding_model_instance, # Use the instance
-                    persist_directory=CHROMA_PERSIST_DIR
-                )
-                rag_source = "Existing DB"
-                st.success("Vector Store loaded.")
-
-                # Create the tool
-                retriever = vector_store_lc.as_retriever(search_kwargs={"k": 3})
-                rag_tool = create_retriever_tool(
-                    retriever,
-                    "personal_document_retriever",
-                    "Searches and returns relevant information from Nikhil Rayaprolu's personal documents (CV, project details, articles, etc.). Use this for specific questions about his skills (AI/LLMs, sales, community building, strategy), experiences (Fettle Health, Catalift, Aretiz, Deloitte, MUTBI, student leadership roles), projects, education (Manipal University BTech EEE 2022), or opinions mentioned in those documents.",
-                )
-                st.session_state['rag_ready'] = True
-                st.session_state['rag_source'] = rag_source
-                return rag_tool
-            else:
-                st.warning(f"Collection '{collection_name}' not found. Mentor needs to upload documents.")
-
+            # Use Chroma directly for loading persistent store
+            vector_store = Chroma(
+                persist_directory=CHROMA_PERSIST_DIR,
+                embedding_function=embedding_model_instance # Use the instance
+            )
+            rag_source = "Existing DB"
+            st.success("Vector Store loaded from previous session.")
         except Exception as e:
-            st.error(f"Error loading existing Vector Store or creating tool: {e}")
-    else:
-        st.warning(f"Knowledge base directory '{CHROMA_PERSIST_DIR}' not found. Mentor needs to upload documents.")
+            st.error(f"Error loading existing Vector Store: {e}. Might be corrupted.")
+            st.warning(f"Attempting fallback from '{DOCS_DIR}' if available.")
+            vector_store = None
 
-    # RAG setup/load failed
+    # 2. If DB doesn't exist or failed loading, try fallback 'docs/' folder
+    if vector_store is None:
+        st.write(f"Checking fallback directory: '{DOCS_DIR}'...")
+        if os.path.exists(DOCS_DIR) and any(os.scandir(DOCS_DIR)):
+            try:
+                st.info(f"Existing Vector Store not found or invalid. Indexing fallback documents from '{DOCS_DIR}'...")
+                fallback_files = [os.path.join(DOCS_DIR, f) for f in os.listdir(DOCS_DIR) if os.path.isfile(os.path.join(DOCS_DIR, f))]
+                if fallback_files:
+                    docs = _load_documents_from_paths(fallback_files)
+                    if docs:
+                        # Use _create_vector_store which now uses Chroma.from_documents
+                        vector_store = _create_vector_store(docs, embedding_model_instance)
+                        rag_source = "Fallback Docs"
+                    else:
+                        st.warning(f"No valid documents found in fallback directory '{DOCS_DIR}'.")
+                else:
+                     st.warning(f"Fallback directory '{DOCS_DIR}' contains no files.")
+            except Exception as e:
+                st.error(f"Error indexing fallback documents: {e}")
+        else:
+            st.warning(f"Existing Vector Store not found and fallback directory '{DOCS_DIR}' is empty or doesn't exist.")
+
+    # 3. Create tool if vector_store is valid
+    if vector_store:
+        try:
+            retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+            rag_tool = create_retriever_tool(
+                retriever,
+                "personal_document_retriever",
+                "Searches and returns relevant information from Nikhil Rayaprolu's personal documents (CV, project details, articles, etc.). Use this for specific questions about his skills (AI/LLMs, sales, community building, strategy), experiences (Fettle Health, Catalift, Aretiz, Deloitte, MUTBI, student leadership roles), projects, education (Manipal University BTech EEE 2022), or opinions mentioned in those documents.",
+            )
+            st.session_state['rag_ready'] = True
+            st.session_state['rag_source'] = rag_source
+            return rag_tool
+        except Exception as e:
+             st.error(f"Error creating retriever tool: {e}")
+
+    # If we reach here, RAG setup failed
     st.session_state['rag_ready'] = False
     st.session_state['rag_source'] = "None"
     return None
 
+
 # --- Agent and Crew Definition (Helper Function - Cached) ---
+# --- No changes needed here, uses the corrected initialize_rag_tool ---
 @st.cache_resource(show_spinner="Setting up AI Agent...")
 def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
     """Initializes CrewAI Agent, Task, and Crew."""
-    # ... (Keep the rest of this function exactly as before) ...
     search_tool = DuckDuckGoSearchRun()
     tools = [search_tool]
     if _rag_tool:
@@ -303,7 +307,6 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
 st.set_page_config(page_title="Catalift AI Mentor", layout="wide")
 
 # --- Initialize RAG on first load/check ---
-# Uses cache_resource, so only runs once per session unless cleared
 if 'rag_initialized' not in st.session_state:
     initialize_rag_tool()
     st.session_state['rag_initialized'] = True
@@ -335,7 +338,6 @@ if not st.session_state['logged_in']:
             st.session_state['logged_in'] = True
             st.session_state['role'] = 'student'
             st.rerun()
-
 
 # --- Mentor View ---
 elif st.session_state['role'] == 'mentor':
@@ -463,6 +465,7 @@ elif st.session_state['role'] == 'student':
         else:
             st.error("AI Agent is not available. Please ensure the Mentor has set up the knowledge base or check logs.")
             st.session_state.messages.append({"role": "assistant", "content": "Sorry, I am not available right now. Please check back later."})
+
 
 # --- Fallback for unexpected state ---
 elif st.session_state.get('logged_in', False) and not st.session_state.get('role'):
