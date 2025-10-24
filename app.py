@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredMarkdownLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import FastEmbeddings
+from langchain_community.embeddings import FastEmbeddings # Corrected import name
 from langchain.tools.retriever import create_retriever_tool
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_groq import ChatGroq
@@ -117,6 +117,7 @@ def setup_rag_from_uploaded_files(uploaded_files):
             return None
 
         try:
+            # Use FastEmbeddings (assuming this class name based on requirements)
             embedding_model = FastEmbeddings(model_name=EMBEDDING_MODEL_NAME)
             _create_vector_store(loaded_docs, embedding_model)
             st.session_state['rag_ready'] = True
@@ -135,6 +136,7 @@ def initialize_rag_tool():
     2. If not found, tries to index files from fallback 'docs/' folder.
     Returns the RAG tool or None if setup fails.
     """
+    # Use FastEmbeddings
     embedding_model = FastEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     vector_store = None
     rag_tool = None
@@ -216,7 +218,7 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
     You are involved in ventures like Fettle Health (health communities & wellness products), Catalift (AI mentorship platform), and Aretiz Innovations (AI/Web3 for corporates). You previously worked at Deloitte Consulting and Brimx, and were an Entrepreneur-in-Residence at Manipal's MUTBI incubator under the NIDHI-EIR fellowship. You also founded YoungSphere (EdTech) during college.
     {persona_rag_status}
     Your goal is to answer questions accurately about Nikhil's background, entrepreneurial journey, insights on HealthTech, AI (human-centered approach), EdTech (skill-gap focus), community building (like the 10k+ WhatsApp groups), and mentoring student entrepreneurs, using the tools provided.
-    You are answering to a student essentially who is being mentored by Nikhil Rayaprolu in career decisions, etc.
+    You are answering questions from a student seeking career advice or insights.
     Your tone should be optimistic, inspirational, and approachable, blending professional insights with motivational encouragement. Use clear language, emphasize human connection and real-world impact over deep technical jargon. Use relevant emojis like 🙂🚀💡 when appropriate.
     Use 'personal_document_retriever' (if available) for specific questions about Nikhil's skills (AI/LLMs, sales, community building, strategy, B.Tech EEE), experiences (Fettle, Catalift, Aretiz, Deloitte, Brimx, MUTBI, Hult Prize, Student E-Cell President, YoungSphere), projects, education (Manipal), achievements (NIDHI-EIR, jury panels), or opinions found in his documents.
     Use 'duckduckgo_search' for current events (roughly post-2023/2024 unless mentioned in docs), general knowledge, market trends, or information NOT explicitly covered in Nikhil's documents.
@@ -235,7 +237,7 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
     agent = Agent(
         # -------- UPDATED Agent Definition --------
         role="AI Mentor representing Nikhil Rayaprolu",
-        goal="Accurately answer questions about Nikhil Rayaprolu's background, entrepreneurial journey, and insights on HealthTech, AI, EdTech, community building, and student startups, using provided documents (if available) and web search.",
+        goal="Accurately answer student questions about Nikhil Rayaprolu's background, entrepreneurial journey, and insights on HealthTech, AI, EdTech, community building, and student startups, using provided documents (if available) and web search.",
         backstory=system_prompt,
         llm=llm,
         tools=tools,
@@ -245,14 +247,24 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
         max_rpm=None # Remove RPM limit for smoother demo unless needed
     )
 
-    # Define Task - Adjust description based on RAG availability
+    # --- CORRECTED Task Description ---
+    # Define the RAG instruction part separately
+    rag_instruction = ""
+    if _rag_tool:
+        # Note: No backslash needed before the single quote if using triple double quotes or if the outer quotes are different
+        rag_instruction = "Prioritize using the `personal_document_retriever` tool for questions specifically about Nikhil Rayaprolu's skills (AI, sales, community, B.Tech EEE), experiences (Fettle Health, Catalift, Aretiz, Deloitte, Brimx, MUTBI, Hult Prize, Student E-Cell, YoungSphere), projects, education (Manipal), achievements (NIDHI-EIR, jury panels), or opinions mentioned in his documents. "
+    else:
+        rag_instruction = "You cannot access personal documents. State this if asked about specifics not searchable online. "
+
+    # Construct the final description, using double braces for the crewai placeholder
     task_description = (
-        "Answer the user's query: '{user_query}'. "
-        # -------- UPDATED Task Description --------
-        f"{'Prioritize using the `personal_document_retriever` tool for questions specifically about Nikhil Rayaprolu\'s skills (AI, sales, community, B.Tech EEE), experiences (Fettle Health, Catalift, Aretiz, Deloitte, Brimx, MUTBI, Hult Prize, Student E-Cell, YoungSphere), projects, education (Manipal), achievements (NIDHI-EIR, jury panels), or opinions mentioned in his documents. ' if _rag_tool else 'You cannot access personal documents. State this if asked about specifics not searchable online. '}"
+        f"Answer the user's query: '{{user_query}}'. "
+        f"{rag_instruction}" # Insert the instruction string
         "Use the `duckduckgo_search` tool for recent information (post-2023/2024 unless in docs), current events, general knowledge, market trends, or topics clearly outside Nikhil's documented background. "
         "Synthesize information from the available tools and respond in Nikhil's defined persona (optimistic, approachable, inspirational, casual yet professional)."
     )
+    # --- END CORRECTION ---
+
     task = Task(
         description=task_description,
         # -------- UPDATED Task Output --------
@@ -265,7 +277,7 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
         agents=[agent],
         tasks=[task],
         process=Process.sequential,
-        # memory=True # Enable CrewAI's built-in short-term memory for the session
+        # memory=True # Optional: Enable CrewAI's built-in short-term memory
     )
     return crew
 
@@ -317,7 +329,6 @@ elif st.session_state['role'] == 'mentor':
             # Clear relevant session state, keep RAG potentially
             st.session_state['logged_in'] = False
             st.session_state['role'] = None
-            # Keep rag_ready and rag_source if you want student to still use previously uploaded data
             st.rerun()
 
     # --- Tabs ---
@@ -350,11 +361,9 @@ elif st.session_state['role'] == 'mentor':
                 if success:
                     # Clear the cached CrewAI components to force reload with new data
                     st.cache_resource.clear()
-                    # Rerun initialization check on next load
-                    st.session_state['rag_initialized'] = False
+                    st.session_state['rag_initialized'] = False # Re-trigger initialization check
                     st.success("Documents processed! The AI knowledge base has been updated.")
-                    # Rerun to refresh status indicator
-                    st.rerun()
+                    st.rerun() # Rerun to refresh status indicator and potentially clear cache resource usage
                 else:
                     st.error("Document processing failed.")
         elif uploaded_files:
@@ -433,11 +442,11 @@ elif st.session_state['role'] == 'student':
                 with st.spinner("🧠 Thinking..."):
                     try:
                         inputs = {"user_query": prompt}
-                        # Use stream for better UX if possible, but kickoff is simpler for now
+                        # Kickoff the crew task
                         result = my_crew.kickoff(inputs=inputs)
 
-                        # Clean up potential markdown issues sometimes seen with agent outputs
-                        cleaned_result = result.replace(" chaîne:", "").replace(" Chaîne:", "") # Example cleanup
+                        # Basic cleanup (optional, adjust if needed)
+                        cleaned_result = result.replace(" chaîne:", "").replace(" Chaîne:", "")
 
                         st.markdown(cleaned_result)
                         st.session_state.messages.append({"role": "assistant", "content": cleaned_result})
