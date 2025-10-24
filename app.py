@@ -1,6 +1,6 @@
 # app.py
 # Final Version - Compatible with requirements.txt adjustments
-
+import chromadb
 import streamlit as st
 import os
 import shutil
@@ -16,6 +16,7 @@ from langchain.tools.retriever import create_retriever_tool
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_groq import ChatGroq
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_community.vectorstores import Chroma
 
 # CrewAI Imports
 from crewai import Agent, Task, Crew, Process
@@ -54,19 +55,56 @@ def _create_vector_store(docs, embedding_model):
     splits = text_splitter.split_documents(docs)
     st.write(f"Created {len(splits)} text chunks.")
 
-    st.write("Creating embeddings and storing in Vector DB (this might take a moment)...")
-    # Clear existing DB before creating a new one
+    st.write("Setting up Vector DB...")
+    # Clear existing DB directory if it exists
     if os.path.exists(CHROMA_PERSIST_DIR):
         st.write("Clearing existing knowledge base...")
         shutil.rmtree(CHROMA_PERSIST_DIR)
 
-    vector_store = Chroma.from_documents(
-        documents=splits,
-        embedding=embedding_model,
-        persist_directory=CHROMA_PERSIST_DIR
-    )
-    st.success("✅ Knowledge Base Indexed Successfully!")
-    return vector_store
+    # Ensure the directory exists before initializing the client
+    os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
+    st.write(f"Ensured directory exists: {CHROMA_PERSIST_DIR}")
+
+    try:
+        # Explicitly initialize the persistent client
+        client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+        st.write("Initialized Persistent Client.")
+
+        # Get or create the collection
+        # Use a consistent collection name
+        collection_name = "mentor_docs_collection"
+        st.write(f"Getting or creating collection: {collection_name}...")
+        collection = client.get_or_create_collection(
+            name=collection_name,
+            embedding_function=chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL_NAME)
+            # Note: We use Chroma's native embedding function interface here
+        )
+        st.write("Collection ready.")
+
+        # Add documents to the collection
+        # We need to extract text and generate IDs
+        st.write("Adding documents to collection...")
+        doc_texts = [doc.page_content for doc in splits]
+        doc_ids = [f"doc_{i}" for i in range(len(splits))] # Simple IDs
+        collection.add(
+            documents=doc_texts,
+            ids=doc_ids
+        )
+        st.success("✅ Knowledge Base Indexed Successfully!")
+
+        # Return the LangChain Chroma object for compatibility (though not strictly needed here)
+        # It will load from the client when needed elsewhere
+        vector_store_lc = Chroma(
+            client=client,
+            collection_name=collection_name,
+            embedding_function=embedding_model, # Pass the LangChain wrapper here for LC object
+            persist_directory=CHROMA_PERSIST_DIR # Still useful for LC object loading
+        )
+        return vector_store_lc # Return the Langchain object
+
+    except Exception as e:
+        st.error(f"Error during Vector Store creation/indexing: {e}")
+        raise # Re-raise the exception to be caught by the calling function
 
 def _load_documents_from_paths(file_paths):
     """Loads documents from a list of file paths."""
@@ -132,69 +170,59 @@ def setup_rag_from_uploaded_files(uploaded_files):
 @st.cache_resource(show_spinner="Initializing Knowledge Base...")
 def initialize_rag_tool():
     """
-    Initializes the RAG tool.
-    1. Tries to load existing DB.
-    2. If not found, tries to index files from fallback 'docs/' folder.
+    Initializes the RAG tool by loading the persisted ChromaDB collection.
     Returns the RAG tool or None if setup fails.
     """
-    embedding_model = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-    vector_store = None
+    embedding_model = FastEmbeddings(model_name=EMBEDDING_MODEL_NAME) # Langchain wrapper
     rag_tool = None
-    rag_source = "None" # Track where the RAG data came from
+    rag_source = "None"
+    collection_name = "mentor_docs_collection" # Use the same collection name
 
-    # 1. Try loading existing persisted DB
     if os.path.exists(CHROMA_PERSIST_DIR):
         try:
             st.write("Loading existing Vector Store...")
-            vector_store = Chroma(
-                persist_directory=CHROMA_PERSIST_DIR,
-                embedding_function=embedding_model
-            )
-            rag_source = "Existing DB"
-            st.success("Vector Store loaded from previous session.")
+            # Initialize persistent client
+            client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+            st.write("Initialized Persistent Client.")
+
+            # Check if collection exists before creating the LangChain object
+            collections = client.list_collections()
+            collection_exists = any(col.name == collection_name for col in collections)
+
+            if collection_exists:
+                st.write(f"Found collection: {collection_name}")
+                # Create the LangChain Chroma object using the client and collection name
+                vector_store_lc = Chroma(
+                    client=client,
+                    collection_name=collection_name,
+                    embedding_function=embedding_model, # Pass the LangChain wrapper
+                    persist_directory=CHROMA_PERSIST_DIR
+                )
+                rag_source = "Existing DB"
+                st.success("Vector Store loaded.")
+
+                # Create the tool
+                retriever = vector_store_lc.as_retriever(search_kwargs={"k": 3})
+                rag_tool = create_retriever_tool(
+                    retriever,
+                    "personal_document_retriever",
+                    "Searches and returns relevant information from Nikhil Rayaprolu's personal documents...", # Keep your description
+                )
+                st.session_state['rag_ready'] = True
+                st.session_state['rag_source'] = rag_source
+                return rag_tool
+            else:
+                st.warning(f"Collection '{collection_name}' not found in the existing database directory.")
+                # Fallback to docs/ folder is removed in this specific function for clarity
+                # The assumption is Mentor must upload first, or fallback needs separate handling if desired.
+                st.warning(f"Please ensure Mentor has uploaded documents via the dashboard.")
+
         except Exception as e:
-            st.error(f"Error loading existing Vector Store: {e}. It might be corrupted.")
-            st.warning(f"Attempting to rebuild from '{DOCS_DIR}' if available.")
-            vector_store = None
+            st.error(f"Error loading existing Vector Store or creating tool: {e}")
+    else:
+        st.warning(f"Knowledge base directory '{CHROMA_PERSIST_DIR}' not found. Mentor needs to upload documents.")
 
-    # 2. If DB doesn't exist or failed loading, try fallback 'docs/' folder
-    if vector_store is None:
-        st.write(f"Checking fallback directory: '{DOCS_DIR}'...")
-        if os.path.exists(DOCS_DIR) and any(os.scandir(DOCS_DIR)): # Check if not empty
-            try:
-                st.info(f"Existing Vector Store not found or invalid. Indexing fallback documents from '{DOCS_DIR}'...")
-                fallback_files = [os.path.join(DOCS_DIR, f) for f in os.listdir(DOCS_DIR) if os.path.isfile(os.path.join(DOCS_DIR, f))]
-                if fallback_files:
-                    docs = _load_documents_from_paths(fallback_files)
-                    if docs:
-                        vector_store = _create_vector_store(docs, embedding_model)
-                        rag_source = "Fallback Docs"
-                    else:
-                        st.warning(f"No valid documents found in fallback directory '{DOCS_DIR}'.")
-                else:
-                     st.warning(f"Fallback directory '{DOCS_DIR}' contains no files.")
-            except Exception as e:
-                st.error(f"Error indexing fallback documents: {e}")
-        else:
-            st.warning(f"Existing Vector Store not found and fallback directory '{DOCS_DIR}' is empty or doesn't exist.")
-
-    # 3. Create tool if vector_store is valid
-    if vector_store:
-        try:
-            retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-            rag_tool = create_retriever_tool(
-                retriever,
-                "personal_document_retriever",
-                # -------- UPDATED TOOL DESCRIPTION --------
-                "Searches and returns relevant information from Nikhil Rayaprolu's personal documents (CV, project details, articles, etc.). Use this for specific questions about his skills (AI/LLMs, sales, community building, strategy), experiences (Fettle Health, Catalift, Aretiz, Deloitte, MUTBI, student leadership roles), projects, education (Manipal University BTech EEE 2022), or opinions mentioned in those documents.",
-            )
-            st.session_state['rag_ready'] = True
-            st.session_state['rag_source'] = rag_source # Store the source info
-            return rag_tool
-        except Exception as e:
-             st.error(f"Error creating retriever tool: {e}")
-
-    # If we reach here, RAG setup failed
+    # If we reach here, RAG setup/load failed
     st.session_state['rag_ready'] = False
     st.session_state['rag_source'] = "None"
     return None
