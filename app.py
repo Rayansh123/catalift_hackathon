@@ -1,6 +1,6 @@
 # app.py
-# Final Version - Compatible with requirements.txt adjustments
-import chromadb
+# Final Version - Corrected FastEmbeddings Import Scope
+
 import streamlit as st
 import os
 import shutil
@@ -11,12 +11,13 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredMarkdownLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings.fastembed import FastEmbedEmbeddings # Corrected import
+# >>>>> REMOVE FastEmbeddings import from here <<<<<
+# from langchain_community.embeddings.fastembed import FastEmbedEmbeddings # REMOVE THIS LINE
 from langchain.tools.retriever import create_retriever_tool
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_groq import ChatGroq
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_community.vectorstores import Chroma
+import chromadb # Keep this import
 
 # CrewAI Imports
 from crewai import Agent, Task, Crew, Process
@@ -44,11 +45,11 @@ CHROMA_PERSIST_DIR = "chroma_db_cv"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-LLM_MODEL_NAME = "llama-3.3-70b-versatile" # Or "mixtral-8x7b-32768"
+LLM_MODEL_NAME = "llama-3.1-8b-instant" # Use currently supported model
 
 # --- RAG Helper Functions ---
 
-def _create_vector_store(docs, embedding_model):
+def _create_vector_store(docs, embedding_model_instance): # Pass instance now
     """Creates a Chroma vector store from documents, overwriting if exists."""
     st.write("Splitting documents into chunks...")
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
@@ -56,58 +57,47 @@ def _create_vector_store(docs, embedding_model):
     st.write(f"Created {len(splits)} text chunks.")
 
     st.write("Setting up Vector DB...")
-    # Clear existing DB directory if it exists
     if os.path.exists(CHROMA_PERSIST_DIR):
         st.write("Clearing existing knowledge base...")
         shutil.rmtree(CHROMA_PERSIST_DIR)
 
-    # Ensure the directory exists before initializing the client
     os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
     st.write(f"Ensured directory exists: {CHROMA_PERSIST_DIR}")
 
     try:
-        # Explicitly initialize the persistent client
         client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
         st.write("Initialized Persistent Client.")
-
-        # Get or create the collection
-        # Use a consistent collection name
         collection_name = "mentor_docs_collection"
         st.write(f"Getting or creating collection: {collection_name}...")
+        # Use Chroma's native SentenceTransformer function wrapper with the model name
         collection = client.get_or_create_collection(
             name=collection_name,
             embedding_function=chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL_NAME)
-            # Note: We use Chroma's native embedding function interface here
         )
         st.write("Collection ready.")
 
-        # Add documents to the collection
-        # We need to extract text and generate IDs
         st.write("Adding documents to collection...")
         doc_texts = [doc.page_content for doc in splits]
-        doc_ids = [f"doc_{i}" for i in range(len(splits))] # Simple IDs
-        collection.add(
-            documents=doc_texts,
-            ids=doc_ids
-        )
+        doc_ids = [f"doc_{i}" for i in range(len(splits))]
+        collection.add(documents=doc_texts, ids=doc_ids)
         st.success("✅ Knowledge Base Indexed Successfully!")
 
-        # Return the LangChain Chroma object for compatibility (though not strictly needed here)
-        # It will load from the client when needed elsewhere
+        # Return the LangChain Chroma object
         vector_store_lc = Chroma(
             client=client,
             collection_name=collection_name,
-            embedding_function=embedding_model, # Pass the LangChain wrapper here for LC object
-            persist_directory=CHROMA_PERSIST_DIR # Still useful for LC object loading
+            embedding_function=embedding_model_instance, # Use the passed Langchain instance
+            persist_directory=CHROMA_PERSIST_DIR
         )
-        return vector_store_lc # Return the Langchain object
+        return vector_store_lc
 
     except Exception as e:
         st.error(f"Error during Vector Store creation/indexing: {e}")
-        raise # Re-raise the exception to be caught by the calling function
+        raise
 
 def _load_documents_from_paths(file_paths):
     """Loads documents from a list of file paths."""
+    # ... (Keep this function exactly as before) ...
     loaded_docs = []
     st.write("Loading documents...")
     for file_path in file_paths:
@@ -128,9 +118,13 @@ def _load_documents_from_paths(file_paths):
             continue
     return loaded_docs
 
+
 # Function called by Mentor Upload
 def setup_rag_from_uploaded_files(uploaded_files):
     """Processes uploaded files and creates/overwrites the RAG retriever tool."""
+    # >>>>> IMPORT FastEmbeddings HERE <<<<<
+    from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+
     if not uploaded_files:
         st.warning("No files uploaded.")
         st.session_state['rag_ready'] = False
@@ -157,8 +151,10 @@ def setup_rag_from_uploaded_files(uploaded_files):
             return None
 
         try:
-            embedding_model = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-            _create_vector_store(loaded_docs, embedding_model)
+            # Initialize the embedding model *inside* the function
+            embedding_model_instance = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+            # Pass the instance to the create function
+            _create_vector_store(loaded_docs, embedding_model_instance)
             st.session_state['rag_ready'] = True
             return True # Indicate success
         except Exception as e:
@@ -173,29 +169,32 @@ def initialize_rag_tool():
     Initializes the RAG tool by loading the persisted ChromaDB collection.
     Returns the RAG tool or None if setup fails.
     """
-    embedding_model = FastEmbeddings(model_name=EMBEDDING_MODEL_NAME) # Langchain wrapper
+    # >>>>> IMPORT FastEmbeddings HERE <<<<<
+    from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+
+    # Initialize embedding model *inside* the cached function
+    embedding_model_instance = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL_NAME)
     rag_tool = None
     rag_source = "None"
-    collection_name = "mentor_docs_collection" # Use the same collection name
+    collection_name = "mentor_docs_collection"
 
     if os.path.exists(CHROMA_PERSIST_DIR):
         try:
             st.write("Loading existing Vector Store...")
-            # Initialize persistent client
             client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
             st.write("Initialized Persistent Client.")
 
-            # Check if collection exists before creating the LangChain object
+            # Check if collection exists
             collections = client.list_collections()
             collection_exists = any(col.name == collection_name for col in collections)
 
             if collection_exists:
                 st.write(f"Found collection: {collection_name}")
-                # Create the LangChain Chroma object using the client and collection name
+                # Create LangChain Chroma object using the instance
                 vector_store_lc = Chroma(
                     client=client,
                     collection_name=collection_name,
-                    embedding_function=embedding_model, # Pass the LangChain wrapper
+                    embedding_function=embedding_model_instance, # Use the instance
                     persist_directory=CHROMA_PERSIST_DIR
                 )
                 rag_source = "Existing DB"
@@ -206,23 +205,20 @@ def initialize_rag_tool():
                 rag_tool = create_retriever_tool(
                     retriever,
                     "personal_document_retriever",
-                    "Searches and returns relevant information from Nikhil Rayaprolu's personal documents...", # Keep your description
+                    "Searches and returns relevant information from Nikhil Rayaprolu's personal documents (CV, project details, articles, etc.). Use this for specific questions about his skills (AI/LLMs, sales, community building, strategy), experiences (Fettle Health, Catalift, Aretiz, Deloitte, MUTBI, student leadership roles), projects, education (Manipal University BTech EEE 2022), or opinions mentioned in those documents.",
                 )
                 st.session_state['rag_ready'] = True
                 st.session_state['rag_source'] = rag_source
                 return rag_tool
             else:
-                st.warning(f"Collection '{collection_name}' not found in the existing database directory.")
-                # Fallback to docs/ folder is removed in this specific function for clarity
-                # The assumption is Mentor must upload first, or fallback needs separate handling if desired.
-                st.warning(f"Please ensure Mentor has uploaded documents via the dashboard.")
+                st.warning(f"Collection '{collection_name}' not found. Mentor needs to upload documents.")
 
         except Exception as e:
             st.error(f"Error loading existing Vector Store or creating tool: {e}")
     else:
         st.warning(f"Knowledge base directory '{CHROMA_PERSIST_DIR}' not found. Mentor needs to upload documents.")
 
-    # If we reach here, RAG setup/load failed
+    # RAG setup/load failed
     st.session_state['rag_ready'] = False
     st.session_state['rag_source'] = "None"
     return None
@@ -231,6 +227,7 @@ def initialize_rag_tool():
 @st.cache_resource(show_spinner="Setting up AI Agent...")
 def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
     """Initializes CrewAI Agent, Task, and Crew."""
+    # ... (Keep the rest of this function exactly as before) ...
     search_tool = DuckDuckGoSearchRun()
     tools = [search_tool]
     if _rag_tool:
@@ -262,7 +259,6 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
 
     # Create Agent
     agent = Agent(
-        # -------- UPDATED Agent Definition --------
         role="AI Mentor representing Nikhil Rayaprolu",
         goal="Accurately answer student questions about Nikhil Rayaprolu's background, entrepreneurial journey, and insights on HealthTech, AI, EdTech, community building, and student startups, using provided documents (if available) and web search.",
         backstory=system_prompt,
@@ -270,31 +266,26 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
         tools=tools,
         allow_delegation=False,
         verbose=True,
-        max_iter=5, # Limit iterations
+        max_iter=5,
         max_rpm=None
     )
 
-    # --- CORRECTED Task Description ---
     # Define the RAG instruction part separately
     rag_instruction = ""
     if _rag_tool:
-        # Using triple quotes to avoid issues with single quotes inside
         rag_instruction = """Prioritize using the `personal_document_retriever` tool for questions specifically about Nikhil Rayaprolu's skills (AI, sales, community, B.Tech EEE), experiences (Fettle Health, Catalift, Aretiz, Deloitte, Brimx, MUTBI, Hult Prize, Student E-Cell, YoungSphere), projects, education (Manipal), achievements (NIDHI-EIR, jury panels), or opinions mentioned in his documents. """
     else:
         rag_instruction = "You cannot access personal documents. State this if asked about specifics not searchable online. "
 
-    # Construct the final description, using double braces for the crewai placeholder
     task_description = (
         f"Answer the user's query: '{{user_query}}'. "
-        f"{rag_instruction}" # Insert the instruction string
+        f"{rag_instruction}"
         "Use the `duckduckgo_search` tool for recent information (post-2023/2024 unless in docs), current events, general knowledge, market trends, or topics clearly outside Nikhil's documented background. "
         "Synthesize information from the available tools and respond in Nikhil's defined persona (optimistic, approachable, inspirational, casual yet professional)."
     )
-    # --- END CORRECTION ---
 
     task = Task(
         description=task_description,
-        # -------- UPDATED Task Output --------
         expected_output="A comprehensive and accurate answer in the optimistic, approachable, and insightful persona of Nikhil Rayaprolu, based on the tool results. Use emojis where appropriate. 🙂🚀💡",
         agent=agent
     )
@@ -304,9 +295,9 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
         agents=[agent],
         tasks=[task],
         process=Process.sequential,
-        # memory=True # Optional: Enable CrewAI's built-in short-term memory
     )
     return crew
+
 
 # --- Page Config ---
 st.set_page_config(page_title="Catalift AI Mentor", layout="wide")
@@ -318,6 +309,7 @@ if 'rag_initialized' not in st.session_state:
     st.session_state['rag_initialized'] = True
 
 # --- Login Logic ---
+# ... (Keep login logic exactly as before) ...
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
     st.session_state['role'] = None
@@ -344,20 +336,20 @@ if not st.session_state['logged_in']:
             st.session_state['role'] = 'student'
             st.rerun()
 
+
 # --- Mentor View ---
 elif st.session_state['role'] == 'mentor':
+    # ... (Keep Mentor view exactly as before, including tabs and upload logic) ...
     st.title("Catalift Mentor Dashboard")
     st.write("Welcome, Mentor! Configure your AI Twin here.")
 
-    # --- Profile & Logout ---
     with st.sidebar:
-        st.text("👤 Nikhil Rayaprolu") # <-- UPDATED
+        st.text("👤 Nikhil Rayaprolu")
         if st.button("Logout"):
             st.session_state['logged_in'] = False
             st.session_state['role'] = None
             st.rerun()
 
-    # --- Tabs ---
     tab1, tab2, tab3 = st.tabs(["📚 Upload Knowledge Base", "🎭 Define Persona (Sample)", "🚀 Manage AI Clone"])
 
     with tab1:
@@ -367,7 +359,6 @@ elif st.session_state['role'] == 'mentor':
             **Uploading files will REPLACE the current knowledge base.** This process might take a minute or two depending on file size and number.
         """)
 
-        # Display current RAG status
         rag_status = st.session_state.get('rag_ready', False)
         rag_source_info = st.session_state.get('rag_source', 'None')
         if rag_status:
@@ -385,11 +376,10 @@ elif st.session_state['role'] == 'mentor':
             with st.spinner("Processing and Indexing... Please wait."):
                 success = setup_rag_from_uploaded_files(uploaded_files)
                 if success:
-                    # Clear the cached CrewAI components and RAG tool
                     st.cache_resource.clear()
-                    st.session_state['rag_initialized'] = False # Re-trigger initialization check
+                    st.session_state['rag_initialized'] = False
                     st.success("Documents processed! The AI knowledge base has been updated.")
-                    st.rerun() # Refresh to show status and clear cache resource usage
+                    st.rerun()
                 else:
                     st.error("Document processing failed.")
         elif uploaded_files:
@@ -421,59 +411,48 @@ elif st.session_state['role'] == 'mentor':
             if st.button("🧪 Test My AI Clone", key="test_clone", help="Opens a private chat interface (Not functional)"):
                  st.info("Prototype: 'Test My AI Clone' clicked.")
 
+
 # --- Student View ---
 elif st.session_state['role'] == 'student':
+    # ... (Keep Student view exactly as before, including chat logic) ...
     st.title("Catalift AI Mentor Chat")
-    st.caption("Ask your Mentor Clone - Nikhil Rayaprolu") # <-- UPDATED
+    st.caption("Ask your Mentor Clone - Nikhil Rayaprolu")
 
-    # --- Profile & Logout ---
     with st.sidebar:
         st.text("👤 Student Profile (Placeholder)")
         if st.button("Logout"):
             st.session_state['logged_in'] = False
             st.session_state['role'] = None
-            st.session_state.pop('messages', None) # Clear chat history
+            st.session_state.pop('messages', None)
             st.rerun()
 
-    # --- Load RAG Tool and Setup Crew ---
-    rag_tool = initialize_rag_tool() # Cached function, handles fallback
+    rag_tool = initialize_rag_tool()
 
     my_crew = None
-    # Setup CrewAI components only if RAG tool loaded or fallback succeeded at least once
-    # We rely on setup_crewai_components handling the None case for rag_tool
     try:
         my_crew = setup_crewai_components(rag_tool)
     except Exception as e:
         st.error(f"Failed to initialize AI Agent components: {e}")
 
-
-    # --- Chat Interface ---
     if "messages" not in st.session_state:
-        # -------- UPDATED Initial Message --------
         st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm Nikhil Rayaprolu's AI assistant. Ask me about his experience in startups, HealthTech, AI, student entrepreneurship, or other topics! 🙂"}]
 
-    # Display messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Input prompt
     if prompt := st.chat_input("Ask Nikhil's AI a question..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Get response only if crew is ready
         if my_crew:
             with st.chat_message("assistant"):
                 with st.spinner("🧠 Thinking..."):
                     try:
                         inputs = {"user_query": prompt}
                         result = my_crew.kickoff(inputs=inputs)
-
-                        # Basic cleanup (optional)
                         cleaned_result = result.replace(" chaîne:", "").replace(" Chaîne:", "")
-
                         st.markdown(cleaned_result)
                         st.session_state.messages.append({"role": "assistant", "content": cleaned_result})
                     except Exception as e:
@@ -484,7 +463,6 @@ elif st.session_state['role'] == 'student':
         else:
             st.error("AI Agent is not available. Please ensure the Mentor has set up the knowledge base or check logs.")
             st.session_state.messages.append({"role": "assistant", "content": "Sorry, I am not available right now. Please check back later."})
-
 
 # --- Fallback for unexpected state ---
 elif st.session_state.get('logged_in', False) and not st.session_state.get('role'):
