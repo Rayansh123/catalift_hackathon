@@ -270,7 +270,7 @@ def setup_crewai_components(_rag_tool): # Takes RAG tool as argument
         tools=tools,
         allow_delegation=False,
         verbose=True,
-        max_iter=5,
+        max_iter=15,
         max_rpm=None
     )
 
